@@ -17,6 +17,13 @@ You are a **QA tester**, not a code reviewer. Think like a real user:
 
 The goal is not to check code quality — it's to check **whether the product delivers what the user asked for**.
 
+## Prerequisites
+
+- ADB installed and in PATH
+- Running emulator or connected device (`adb devices` shows a device)
+- APK built (debug or release)
+- Python 3.10+ (for utility scripts — uses only stdlib)
+
 ## Workflow
 
 ### Phase 1: Understand the Request
@@ -35,14 +42,12 @@ Read the source code to build a mental model of what exists before testing. This
 
 For each target feature, identify:
 - **Entry point** — which Activity/Fragment hosts it, what Intent or navigation action reaches it
-- **Key UI elements** — buttons, text fields, lists, toggles (from layout XML files)
+- **Key UI elements** — buttons, text fields, lists, toggles (from layout XML files). Note the `android:id` values — these become `resource-id` on device and are the most stable way to locate elements.
 - **Expected behavior** — what should happen on tap, submit, long-press
 - **Data layer** — Room DAO, SharedPreferences, network calls (so you can verify persistence)
 - **Dependencies** — permissions needed, services required, login state
 
 Use the source code as your map, but **test from the UI, not from the code**. The code tells you what should happen; the device tells you what actually happens.
-
-Read `references/adb-commands.md` for the ADB command toolkit.
 
 ### Phase 3: Device Setup
 
@@ -64,7 +69,7 @@ adb shell pm clear <package_name>
 Verify the app launches:
 ```bash
 adb shell am start -n <package>/<main_activity>
-sleep 2
+python scripts/ui_wait.py --text "<expected_text>" --timeout 10
 adb shell screencap -p /sdcard/screen_check.png
 adb pull /sdcard/screen_check.png /tmp/screen_check.png
 ```
@@ -76,44 +81,110 @@ adb logcat -d -s AndroidRuntime:E | tail -50
 
 ### Phase 4: Systematic UI Exploration
 
-For each feature, follow this cycle:
+All element interaction uses the bundled Python scripts in `scripts/`. These replace fragile coordinate-based tapping with **semantic element locating**, **polling waits**, and **automatic retry**.
+
+#### Script Overview
+
+| Script | Purpose | Example |
+|--------|---------|---------|
+| `ui_find.py` | Find element by text/id, get tap coordinates | `python scripts/ui_find.py /tmp/ui.xml --text "保存"` |
+| `ui_wait.py` | Poll until element appears/disappears | `python scripts/ui_wait.py --text "加载完成" --timeout 15` |
+| `adb_input.py` | Text input with auto Chinese support | `python scripts/adb_input.py text "你好"` |
+| `adb_interact.py` | High-level: find + tap + wait + retry | `python scripts/adb_interact.py tap --text "保存" --wait-after "已保存"` |
 
 #### Step 1: Navigate to the feature
+
 ```bash
 # Launch specific activity
 adb shell am start -n <package>/<activity>
 
-# Or tap through navigation (e.g., bottom tab)
-adb shell input tap <x> <y>
-sleep 1
+# Wait for the screen to load (don't use sleep!)
+python scripts/ui_wait.py --text "<expected_screen_text>" --timeout 10
 ```
 
 #### Step 2: Capture the initial state
+
 ```bash
-adb shell uiautomator dump /sdcard/ui.xml
-adb pull /sdcard/ui.xml /tmp/ui_current.xml
 adb shell screencap -p /sdcard/screen.png
 adb pull /sdcard/screen.png /tmp/screen_01.png
 ```
 
-Read the UI XML to understand what's on screen — find clickable elements, text fields, their coordinates and resource-ids.
+#### Step 3: Interact with semantic locating
 
-#### Step 3: Interact and observe
-Execute the user flow step by step:
-- **Tap a button**: `adb shell input tap <x> <y>`
-- **Type text**: `adb shell input text "hello"` (for ASCII) or use ADBKeyboard for Chinese
-- **Swipe/scroll**: `adb shell input swipe <x1> <y1> <x2> <y2> <duration_ms>`
-- **Press back**: `adb shell input keyevent 4`
-- **Press home**: `adb shell input keyevent 3`
+**Tap an element by text:**
+```bash
+python scripts/adb_interact.py tap --text "保存" --retries 3
+```
 
-After each action, wait briefly (`sleep 1`), then dump UI + screenshot to verify the result.
+**Tap an element by resource-id (more stable):**
+```bash
+python scripts/adb_interact.py tap --id "com.shendu.app:id/btn_save" --retries 3
+```
+
+**Tap and wait for confirmation:**
+```bash
+python scripts/adb_interact.py tap --text "保存" --wait-after "保存成功" --timeout 5
+```
+
+**Tap and wait for screen transition:**
+```bash
+python scripts/adb_interact.py tap --text "日记" --wait-screen "日记详情" --timeout 10
+```
+
+**Input Chinese text:**
+```bash
+python scripts/adb_input.py text "今天天气真好"
+```
+
+**Input ASCII text:**
+```bash
+python scripts/adb_input.py text "hello world"
+```
+
+**Scroll to find an off-screen element:**
+```bash
+python scripts/adb_interact.py scroll-find --text "隐私政策" --max-scrolls 5
+```
+
+**Press back:**
+```bash
+python scripts/adb_input.py key 4
+```
 
 #### Step 4: Verify the outcome
+
+After each interaction, verify the result:
+```bash
+# Wait for expected state (don't use sleep!)
+python scripts/ui_wait.py --text "预期文本" --timeout 5
+
+# Take screenshot for visual verification
+adb shell screencap -p /sdcard/screen.png
+adb pull /sdcard/screen.png /tmp/screen_after.png
+```
+
 Check whether the expected result occurred:
 - **Visual**: Does the screenshot show the expected screen/content?
 - **State**: Did data persist? (Check via UI — e.g., reopen the screen, check if item appears in list)
 - **Feedback**: Did the user get confirmation (toast, snackbar, navigation)?
 - **Error handling**: What happens with invalid input? (empty fields, special characters, extremely long text)
+
+#### Finding elements without knowing exact text
+
+When you need to explore what's on screen:
+```bash
+# List all clickable elements
+python scripts/ui_find.py /tmp/ui.xml --all
+
+# Search by partial text
+python scripts/ui_find.py /tmp/ui.xml --contains "日"
+
+# Filter by class
+python scripts/ui_find.py /tmp/ui.xml --class "Button" --clickable
+
+# Get JSON output for complex queries
+python scripts/ui_find.py /tmp/ui.xml --all --json
+```
 
 ### Phase 5: Edge Case Testing
 
@@ -122,11 +193,11 @@ For each feature, also test these common failure modes:
 | Scenario | How to test |
 |----------|-------------|
 | Empty submission | Leave fields blank, tap submit |
-| Rapid double-tap | Tap the same button twice quickly |
-| Back button mid-flow | Press back during multi-step process |
+| Rapid double-tap | Tap the same button twice quickly (`adb_interact.py tap` then immediate second tap) |
+| Back button mid-flow | `python scripts/adb_input.py key 4` during multi-step process |
 | Rotation | `adb shell settings put system accelerometer_rotation 1` then rotate |
-| Long text | Input 500+ characters into text fields |
-| Special characters | Input `<script>`, emojis, newlines |
+| Long text | Input 500+ characters: `python scripts/adb_input.py text "$(python3 -c 'print("A"*500)')"` |
+| Special characters | `python scripts/adb_input.py text '<script>alert(1)</script>'` |
 | Permission denial | Deny a permission, check graceful handling |
 | Network unavailable | Toggle airplane mode, test offline behavior |
 | Background/foreground | Press home, reopen app, check state preservation |
@@ -178,55 +249,20 @@ Save all screenshots to a temporary directory. In the report, reference them by 
 
 At the end, offer to open the screenshot directory so the user can review visually.
 
-## ADB Tips for Chinese Text Input
-
-Standard `adb shell input text` doesn't handle Chinese. Options:
-
-1. **ADBKeyboard** (recommended): Install ADBKeyboard.apk, set as default input method:
-   ```bash
-   adb install ADBKeyboard.apk
-   adb shell settings put secure default_input_method com.android.adbkeyboard/.AdbIME
-   ```
-   Then: `adb shell am broadcast -a ADB_INPUT_TEXT --es msg '你好世界'`
-
-2. **Unicode escape**: `adb shell input text '%E4%BD%A0%E5%A5%BD'` (unreliable across devices)
-
-3. **Paste via clipboard**: Copy text to clipboard via `adb shell service call clipboard 2 i32 1 s16 "text"` then paste with `adb shell input keyevent 279` (complex, device-dependent)
-
-## Working with UI Hierarchy XML
-
-After `uiautomator dump`, the XML contains all visible UI nodes:
-
-```xml
-<node index="0" text="日记" resource-id="com.example:id/tab_diary"
-      class="android.widget.TextView" package="com.example"
-      content-desc="" checkable="false" checked="false" clickable="true"
-      enabled="true" focusable="true" focused="false"
-      scrollable="false" long-clickable="false" password="false"
-      selected="false" bounds="[200,1800][400,1900]" />
-```
-
-Key attributes for finding elements:
-- `text` — visible text content
-- `resource-id` — stable identifier (preferred for targeting)
-- `bounds` — screen coordinates for tap targets: `[left,top][right,bottom]`
-- `clickable="true"` — can be tapped
-- `enabled="false"` — grayed out / disabled
-
-To tap the center of an element: `adb shell input tap <(left+right)/2> <(top+bottom)/2>`
-
 ## When Things Go Wrong
 
 - **App crashes**: Immediately capture `adb logcat -d -s AndroidRuntime:E` and include in report
 - **ANR (hang)**: `adb pull /data/anr/traces.txt` for stack traces
-- **Screen not changing**: Dump UI again — maybe a dialog appeared, or the tap missed the target
+- **Element not found**: Use `--all` to list what's actually on screen — the element may have different text than expected
 - **UI dump fails**: Some system dialogs can't be dumped; use screenshot instead
-- **Emulator not responding**: `adb emu kill` and restart
+- **Tap missed**: The element may have moved or the screen scrolled. Dump UI again to get fresh coordinates
+- **ADBKeyboard not responding**: Re-run `python scripts/adb_input.py text "test"` — it auto-recovers by reinstalling
 
 ## Important Constraints
 
 - You are simulating a user, not a developer. Don't read logcat to "understand" what happened — look at the screen first.
-- Always dump UI AFTER every interaction. Screenshots alone miss disabled states, hidden elements, and content descriptions.
+- **Never use `sleep N` for UI synchronization.** Always use `ui_wait.py` — it polls until the target state is detected, which is both faster and more reliable.
+- **Never hardcode tap coordinates.** Always use `ui_find.py` or `adb_interact.py` to locate elements semantically. Coordinates change with screen size, density, and content.
 - If a feature requires login, handle that first. Don't skip features because of auth walls — log in and proceed.
 - Don't modify app data or source code during testing. You're an observer, not a developer (unless explicitly asked).
 - Save screenshots liberally. They're cheap and invaluable for the report.

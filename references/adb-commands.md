@@ -2,7 +2,107 @@
 
 Quick-reference for APK feature testing. All commands run from host shell.
 
-## Device Management
+**Prefer the bundled Python scripts over raw ADB commands** — they handle element locating, polling waits, Chinese input, and retry automatically. Raw ADB is listed here for edge cases and device management.
+
+---
+
+## Script Quick Reference
+
+All scripts are in `scripts/` and use only Python stdlib (no pip install needed).
+
+### ui_find.py — Find Element
+
+```bash
+# Find by exact text
+python scripts/ui_find.py /tmp/ui.xml --text "保存"
+
+# Find by resource-id
+python scripts/ui_find.py /tmp/ui.xml --id "com.app:id/btn_save"
+
+# Find by partial text
+python scripts/ui_find.py /tmp/ui.xml --contains "日"
+
+# List all clickable elements
+python scripts/ui_find.py /tmp/ui.xml --all
+
+# Filter by class + clickable
+python scripts/ui_find.py /tmp/ui.xml --class "Button" --clickable
+
+# JSON output for programmatic use
+python scripts/ui_find.py /tmp/ui.xml --all --json
+```
+
+Output: `FOUND: text="保存" id="com.app:id/save" bounds=[900,1800][1080,1920] → tap(990, 1860)`
+
+### ui_wait.py — Polling Wait
+
+```bash
+# Wait for element to appear (replaces sleep!)
+python scripts/ui_wait.py --text "日记详情" --timeout 10
+
+# Wait for element to disappear (e.g., loading spinner)
+python scripts/ui_wait.py --text "加载中" --gone --timeout 30
+
+# Wait by resource-id
+python scripts/ui_wait.py --id "progress_bar" --gone --timeout 20
+
+# Custom poll interval (default 0.8s)
+python scripts/ui_wait.py --text "完成" --timeout 15 --interval 0.5
+```
+
+Exit code: 0 = found/gone, 1 = timeout.
+
+### adb_input.py — Text Input (Chinese + ASCII)
+
+```bash
+# ASCII text
+python scripts/adb_input.py text "hello world"
+
+# Chinese text (auto-installs ADBKeyboard, switches IME, restores after)
+python scripts/adb_input.py text "你好世界"
+
+# Tap at coordinates (prefer adb_interact.py for semantic tap)
+python scripts/adb_input.py tap 500 1000
+
+# Swipe
+python scripts/adb_input.py swipe 500 1500 500 500 300
+
+# Key event
+python scripts/adb_input.py key 4    # back
+python scripts/adb_input.py key 66   # enter
+
+# Clear current text field
+python scripts/adb_input.py clear
+```
+
+### adb_interact.py — High-Level Interaction
+
+```bash
+# Tap by text (with 3 retries)
+python scripts/adb_interact.py tap --text "保存" --retries 3
+
+# Tap by resource-id
+python scripts/adb_interact.py tap --id "com.app:id/btn_save"
+
+# Tap + wait for confirmation text
+python scripts/adb_interact.py tap --text "保存" --wait-after "保存成功" --timeout 5
+
+# Tap + wait for screen transition
+python scripts/adb_interact.py tap --text "日记" --wait-screen "日记详情" --timeout 10
+
+# Scroll down until element appears
+python scripts/adb_interact.py scroll-find --text "隐私政策" --max-scrolls 5
+
+# Scroll up
+python scripts/adb_interact.py scroll-find --text "顶部" --direction up --max-scrolls 3
+
+# Input text (delegates to adb_input.py)
+python scripts/adb_interact.py input "今天天气真好"
+```
+
+---
+
+## Device Management (raw ADB)
 
 ```bash
 # List connected devices
@@ -43,119 +143,6 @@ adb shell pm clear <package_name>
 
 # Get current foreground activity
 adb shell dumpsys activity activities | grep mResumedActivity
-```
-
-## UI Interaction
-
-### Taps and Swipes
-
-```bash
-# Tap at coordinates
-adb shell input tap <x> <y>
-
-# Long press (hold 2 seconds)
-adb shell swipe <x> <y> <x> <y> 2000
-
-# Swipe
-adb shell input swipe <x1> <y1> <x2> <y2> [duration_ms]
-# Scroll down:  adb shell input swipe 500 1500 500 500 300
-# Scroll up:    adb shell input swipe 500 500 500 1500 300
-
-# Drag (longer duration)
-adb shell input swipe <x1> <y1> <x2> <y2> 1000
-```
-
-### Text Input
-
-```bash
-# Type ASCII text (cursor must be in a text field)
-adb shell input text "hello"
-
-# Type with spaces (escape spaces)
-adb shell input text "hello%sworld"
-
-# Chinese text via ADBKeyboard (must be installed and set as IME)
-adb shell am broadcast -a ADB_INPUT_TEXT --es msg '你好世界'
-
-# Clear existing text: select all + delete
-adb shell input keyevent 29 --longpress   # Ctrl+A (select all)
-adb shell input keyevent 67               # DEL key
-
-# Alternative: triple-tap to select all, then type
-adb shell input tap <x> <y>
-adb shell input tap <x> <y>
-adb shell input tap <x> <y>
-adb shell input keyevent 67
-```
-
-### Key Events
-
-```bash
-# Back button
-adb shell input keyevent 4    # KEYCODE_BACK
-
-# Home button
-adb shell input keyevent 3    # KEYCODE_HOME
-
-# Recent apps
-adb shell input keyevent 187  # KEYCODE_APP_SWITCH
-
-# Enter/Done
-adb shell input keyevent 66   # KEYCODE_ENTER
-
-# Tab (move focus)
-adb shell input keyevent 61   # KEYCODE_TAB
-
-# Volume
-adb shell input keyevent 24   # VOLUME_UP
-adb shell input keyevent 25   # VOLUME_DOWN
-
-# Power
-adb shell input keyevent 26   # KEYCODE_POWER
-
-# Menu
-adb shell input keyevent 82   # KEYCODE_MENU
-
-# Clipboard paste
-adb shell input keyevent 279  # KEYCODE_PASTE
-```
-
-## UI Inspection
-
-```bash
-# Dump UI hierarchy to XML
-adb shell uiautomator dump /sdcard/ui.xml
-adb pull /sdcard/ui.xml /tmp/ui.xml
-
-# Dump and display (one-liner for quick check)
-adb shell uiautomator dump /dev/tty 2>/dev/null | head -5
-
-# Read specific element info from dumped XML
-# Look for: text, resource-id, bounds, clickable, enabled, selected
-```
-
-### XML Element Attributes
-
-| Attribute | Meaning | Use |
-|-----------|---------|-----|
-| `text` | Visible text | Verify content, find element by label |
-| `resource-id` | R.id reference | Most stable locator |
-| `bounds` | `[left,top][right,bottom]` | Calculate tap coordinates |
-| `clickable` | Can be tapped | Filter interactive elements |
-| `enabled` | Not grayed out | Check if action is available |
-| `selected` | Active/current tab | Verify navigation state |
-| `scrollable` | Contains scrollable content | Know if swipe will work |
-| `content-desc` | Accessibility label | Alternative locator |
-| `password` | Is password field | Verify masking |
-| `checked` | Toggle state | Verify switch/checkbox |
-
-### Calculate Tap Target
-
-```
-bounds="[200,1800][400,1900]"
-center_x = (200 + 400) / 2 = 300
-center_y = (1800 + 1900) / 2 = 1850
-→ adb shell input tap 300 1850
 ```
 
 ## Screenshots
@@ -250,44 +237,60 @@ adb shell pm revoke <package_name> android.permission.READ_CONTACTS
 adb shell dumpsys package <package_name> | grep permission
 ```
 
-## Common Patterns
-
-### Wait for screen to settle
+## UI Inspection (raw, prefer scripts above)
 
 ```bash
-sleep 2   # simple approach; UI transitions typically take 0.5-2s
-```
-
-### Find and tap element by text
-
-```bash
-# 1. Dump UI
+# Dump UI hierarchy to XML
 adb shell uiautomator dump /sdcard/ui.xml
 adb pull /sdcard/ui.xml /tmp/ui.xml
 
-# 2. Find element with target text and extract bounds
-grep -o 'text="保存"[^>]*bounds="\[[0-9,]*\]\[[0-9,]*\]"' /tmp/ui.xml
+# Dump and display (one-liner for quick check)
+adb shell uiautomator dump /dev/tty 2>/dev/null | head -5
+```
 
-# 3. Parse bounds and calculate center, then tap
-# (Manual or scripted parsing needed)
+### XML Element Attributes
+
+| Attribute | Meaning | Use |
+|-----------|---------|-----|
+| `text` | Visible text | Verify content, find element by label |
+| `resource-id` | R.id reference | Most stable locator |
+| `bounds` | `[left,top][right,bottom]` | Calculate tap coordinates |
+| `clickable` | Can be tapped | Filter interactive elements |
+| `enabled` | Not grayed out | Check if action is available |
+| `selected` | Active/current tab | Verify navigation state |
+| `scrollable` | Contains scrollable content | Know if swipe will work |
+| `content-desc` | Accessibility label | Alternative locator |
+| `password` | Is password field | Verify masking |
+| `checked` | Toggle state | Verify switch/checkbox |
+
+## Common Patterns (prefer scripts)
+
+### Wait for screen to settle
+```bash
+# DON'T: sleep 2
+# DO:
+python scripts/ui_wait.py --text "expected_text" --timeout 10
+```
+
+### Find and tap element
+```bash
+# DON'T: grep XML, calculate coordinates, input tap
+# DO:
+python scripts/adb_interact.py tap --text "保存" --retries 3
 ```
 
 ### Verify element exists on screen
-
 ```bash
-adb shell uiautomator dump /sdcard/ui.xml
-adb pull /sdcard/ui.xml /tmp/ui.xml
-grep -q 'text="预期文本"' /tmp/ui.xml && echo "FOUND" || echo "NOT FOUND"
+python scripts/ui_find.py /tmp/ui.xml --text "预期文本"
+# Exit code 0 = found, 1 = not found
 ```
 
 ### Check if app is running
-
 ```bash
 adb shell pidof <package_name>   # returns PID if running, empty if not
 ```
 
 ### Navigate to a specific screen via deep link
-
 ```bash
 adb shell am start -a android.intent.action.VIEW -d "app://specific-screen"
 ```
